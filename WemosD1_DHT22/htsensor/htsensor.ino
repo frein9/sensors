@@ -1,34 +1,38 @@
 /*
-    This sketch establishes a TCP connection to a "quote of the day" service.
-    It sends a "hello" message, and then prints received data.
+온습도 정보를 ThingSpeak 로 전송
+온습도 센서 DHT22
+
 */
-
 #include <ESP8266WiFi.h>
+#include "DHT.h"
 
+// 1. Wifi & ThingSpeak 정보
 #ifndef STASSID
 #define STASSID "scolas"
 #define STAPSK  "01048568946"
+#define THINGSPEAK_APIKEY "KRUZUWIWD6HZB4VW"
+#define THINGSPEAK_HOST "api.thingspeak.com"
 #endif
 
 const char* ssid     = STASSID;
 const char* password = STAPSK;
+String apiKey = THINGSPEAK_APIKEY;
+const char* host = THINGSPEAK_HOST;
+const uint16_t port = 80;
 
-const char* host = "djxmmx.net";
-const uint16_t port = 17;
+// 2. DHT 정보
+#define DHTPIN 2
+#define DHTTYPE DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
 
-  // We start by connecting to a WiFi network
+  // WIFI Initial
+  Serial.print("Connect WIFI ");
+  Serial.print(ssid);
 
-  Serial.println();
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  /* Explicitly set the ESP8266 to be a WiFi-client, otherwise, it by default,
-     would try to act as both a client and an access-point and could cause
-     network-issues with your other WiFi-devices on your WiFi-network. */
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
@@ -37,55 +41,73 @@ void setup() {
     Serial.print(".");
   }
 
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
+  Serial.print(" Connected ");
   Serial.println(WiFi.localIP());
+
+  // DHT Initial
+  dht.begin();
 }
 
 void loop() {
-  Serial.print("connecting to ");
+  // 온습도 측정
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+
+  if (isnan(h) || isnan(t)) {
+    Serial.println(F("Failed to read from DHT sensor!"));
+    return;
+  }
+
+  // Heat Index를 섭씨로 계산 (3번째 인수는 화씨 여부)
+  float hic = dht.computeHeatIndex(t, h, false);
+
+  Serial.print(F("Humidity: "));
+  Serial.print(h);
+  Serial.print(F("%  Temperature: "));
+  Serial.print(t);
+  Serial.print(F("°C  Heat index: "));
+  Serial.print(hic);
+  Serial.println(F("°C "));
+
+  // ThingSpeak 연결
+  Serial.print("Connecting to ");
   Serial.print(host);
   Serial.print(':');
-  Serial.println(port);
+  Serial.print(port);
 
-  // Use WiFiClient class to create TCP connections
   WiFiClient client;
+
   if (!client.connect(host, port)) {
-    Serial.println("connection failed");
+    Serial.println(" Failed");
     delay(5000);
     return;
   }
 
-  // This will send a string to the server
-  Serial.println("sending data to server");
+  // 데이터 전송
   if (client.connected()) {
-    client.println("hello from ESP8266");
+    String postStr = apiKey;
+    postStr += "&field1=";
+    postStr += String(h);
+    postStr += "&field2=";
+    postStr += String(t);
+    postStr += "&field3=";
+    postStr += String(hic);
+    postStr += "\r\n\r\n";
+
+    client.print("POST /update HTTP/1.1\n");
+    client.print("Host: api.thingspeak.com\n");
+    client.print("Connection: close\n");
+    client.print("X-THINGSPEAKAPIKEY: " + apiKey + "\n");
+    client.print("Content-Type: application/x-www-form-urlencoded\n");
+    client.print("Content-Length: ");
+    client.print(postStr.length());
+    client.print("\n\n");
+    client.print(postStr);
+
+    Serial.print(" Success");
   }
 
-  // wait for data to be available
-  unsigned long timeout = millis();
-  while (client.available() == 0) {
-    if (millis() - timeout > 5000) {
-      Serial.println(">>> Client Timeout !");
-      client.stop();
-      delay(60000);
-      return;
-    }
-  }
-
-  // Read all the lines of the reply from server and print them to Serial
-  Serial.println("receiving from remote server");
-  // not testing 'client.connected()' since we do not need to send data here
-  while (client.available()) {
-    char ch = static_cast<char>(client.read());
-    Serial.print(ch);
-  }
-
-  // Close the connection
-  Serial.println();
-  Serial.println("closing connection");
+  Serial.println("");
   client.stop();
-
-  delay(300000); // execute once every 5 minutes, don't flood remote service
+  delay(60000);
 }
